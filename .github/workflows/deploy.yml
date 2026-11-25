@@ -24,14 +24,14 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '24'
 
       - name: Install dependencies
         run: |
           if [ -f package-lock.json ]; then
-            npm ci
+            npm ci --legacy-peer-deps --no-audit --no-fund
           else
-            npm install
+            npm install --legacy-peer-deps --no-audit --no-fund
           fi
 
       - name: Run unit tests
