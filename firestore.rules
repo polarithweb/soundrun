@@ -1,0 +1,116 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Pillar 0: Default-deny global safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Pillar 3: Reusable hardened primitives
+    function isValidId(id) {
+      return id is string
+        && id.size() >= 4
+        && id.size() <= 64
+        && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // Pillar 2: Standalone schema & boundary validation helper (called on create AND update)
+    function isValidLeaderboardEntry(data, docId) {
+      return data.keys().hasAll([
+          'playerId',
+          'playerName',
+          'bestScore',
+          'bestDistance',
+          'coinsCollected',
+          'pinkCoinsCollected',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'playerId',
+          'playerName',
+          'bestScore',
+          'bestDistance',
+          'coinsCollected',
+          'pinkCoinsCollected',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.playerId is string
+        && data.playerId == docId
+        && isValidId(data.playerId)
+        && data.playerName is string
+        && data.playerName.size() >= 1
+        && data.playerName.size() <= 24
+        && data.bestScore is int
+        && data.bestScore >= 0
+        && data.bestScore <= 10000000
+        && data.bestDistance is int
+        && data.bestDistance >= 0
+        && data.bestDistance <= 1000000
+        && data.coinsCollected is int
+        && data.coinsCollected >= 0
+        && data.coinsCollected <= 1000000
+        && data.pinkCoinsCollected is int
+        && data.pinkCoinsCollected >= 0
+        && data.pinkCoinsCollected <= 100000
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // Open, passwordless arcade high-score leaderboard (zero PII, strictly schema-hardened)
+    match /leaderboard/{playerId} {
+      // Single-doc read guarded by path ID validation
+      allow get: if isValidId(playerId);
+
+      // List query enforces non-negative score filter and bounded page size (statically provable by Firestore)
+      allow list: if resource.data.bestScore >= 0
+        && request.query.limit <= 50;
+
+      // Create: strict ID + schema + server timestamps
+      allow create: if isValidId(playerId)
+        && isValidLeaderboardEntry(incoming(), playerId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      // Update: validation helper wraps entire update + action-based affectedKeys + monotonic score + immutable createdAt/playerId
+      allow update: if isValidId(playerId)
+        && isValidLeaderboardEntry(incoming(), playerId)
+        && incoming().playerId == existing().playerId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          // Action 1: Sync a new high score (monotonic: never lowers bestScore)
+          (
+            incoming().bestScore >= existing().bestScore
+            && incoming().bestDistance >= existing().bestDistance
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'playerName',
+              'bestScore',
+              'bestDistance',
+              'coinsCollected',
+              'pinkCoinsCollected',
+              'updatedAt'
+            ])
+          )
+          // Action 2: Rename player display name only
+          || incoming().diff(existing()).affectedKeys().hasOnly([
+            'playerName',
+            'updatedAt'
+          ])
+        );
+
+      // Prevent destructive deletion of leaderboard scores
+      allow delete: if false;
+    }
+  }
+}

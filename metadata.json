@@ -1,0 +1,6 @@
+{
+  "name": "Highway Echo Run",
+  "description": "A landscape-only 3D side-scrolling auto-runner with photorealistic coastal highway scenery, day-night cycle, solid-color parkour blocks, and sound-intensity jump controls.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

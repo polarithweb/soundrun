@@ -1,0 +1,68 @@
+{
+  "entities": {
+    "LeaderboardEntry": {
+      "title": "LeaderboardEntry",
+      "description": "Public high-score entry for an Echo Meadow Run player, keyed by a device-local player ID with no login required.",
+      "type": "object",
+      "properties": {
+        "playerId": {
+          "type": "string",
+          "description": "Stable device-generated identifier matching the Firestore document ID.",
+          "minLength": 4,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "playerName": {
+          "type": "string",
+          "description": "Public arcade display name chosen by the player on their device.",
+          "minLength": 1,
+          "maxLength": 24
+        },
+        "bestScore": {
+          "type": "integer",
+          "description": "Highest score achieved by this player across runs (0 to 10,000,000)."
+        },
+        "bestDistance": {
+          "type": "integer",
+          "description": "Farthest distance reached in meters (0 to 1,000,000)."
+        },
+        "coinsCollected": {
+          "type": "integer",
+          "description": "Gold coins collected during the player's best run (0 to 1,000,000)."
+        },
+        "pinkCoinsCollected": {
+          "type": "integer",
+          "description": "Pink Star Coins collected during the player's best run (0 to 100,000)."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the player first joined the leaderboard."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the player's entry was last updated."
+        }
+      },
+      "required": [
+        "playerId",
+        "playerName",
+        "bestScore",
+        "bestDistance",
+        "coinsCollected",
+        "pinkCoinsCollected",
+        "createdAt",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/leaderboard/{playerId}": {
+      "schema": {
+        "$ref": "#/entities/LeaderboardEntry"
+      },
+      "description": "Global synced high-score leaderboard entries readable and writable without sign-in, hardened by strict schema, size, timestamp, and monotonic high-score guards."
+    }
+  }
+}
