@@ -17,7 +17,11 @@ import {
   extractHudSnapshot,
   stepSimulation,
 } from './game/simulation';
-import { computeJumpThreshold, MicInputController } from './game/soundPhysics';
+import {
+  AmbientNoiseCalibrator,
+  computeJumpThreshold,
+  MicInputController,
+} from './game/soundPhysics';
 import {
   loadSaveData,
   persistSaveData,
@@ -26,6 +30,7 @@ import {
 import type {
   AudioCalibration,
   AudioTelemetry,
+  AutoCalibrationState,
   HudSnapshot,
   LeaderboardEntry,
   PersistedSaveData,
@@ -69,6 +74,17 @@ export default function App() {
   const [hud, setHud] = useState<HudSnapshot>(() =>
     extractHudSnapshot(simRef.current),
   );
+  const calibratorRef = useRef<AmbientNoiseCalibrator>(new AmbientNoiseCalibrator());
+  const hasAutoCalibratedRef = useRef<boolean>(false);
+
+  const [autoCalState, setAutoCalState] = useState<AutoCalibrationState>({
+    isScanning: false,
+    progress: 0,
+    ambientNoisePct: null,
+    environmentLabel: null,
+    statusMessage: null,
+  });
+
   const [audioTelemetry, setAudioTelemetry] = useState<AudioTelemetry>({
     isMicActive: false,
     isRequesting: false,
@@ -205,8 +221,38 @@ export default function App() {
     try {
       sceneController = createCanvas2DScene(container, (dt, nowMs) => {
         const sim = simRef.current;
-        const cal = saveDataRef.current.calibration;
+        let cal = saveDataRef.current.calibration;
         const sampled = mic.sample(cal, nowMs, dt);
+
+        // Feed live ambient noise samples into Auto Calibrator while scanning
+        const calibrator = calibratorRef.current;
+        if (calibrator.isScanning() && sampled.isMicActive) {
+          const scanUpdate = calibrator.pushSample(sampled.rawRms, nowMs);
+          if (scanUpdate.result) {
+            const res = scanUpdate.result;
+            hasAutoCalibratedRef.current = true;
+            cal = res.calibration;
+            const nextSave: PersistedSaveData = {
+              ...saveDataRef.current,
+              calibration: res.calibration,
+            };
+            saveDataRef.current = nextSave;
+            setSaveData(nextSave);
+            setAutoCalState({
+              isScanning: false,
+              progress: 1,
+              ambientNoisePct: res.ambientNoisePct,
+              environmentLabel: res.environmentLabel,
+              statusMessage: `${res.environmentLabel} room · Move border auto-set to ${Math.round(res.calibration.threshold * 100)}%`,
+            });
+          } else if (hudAccum + dt >= 0.05) {
+            setAutoCalState((prev) =>
+              prev.isScanning
+                ? { ...prev, progress: scanUpdate.progress }
+                : prev,
+            );
+          }
+        }
 
         if (sim.phase === 'playing' && !isPortraitRef.current) {
           const events = stepSimulation(sim, {
@@ -235,7 +281,7 @@ export default function App() {
             setHud(extractHudSnapshot(sim));
           }
         } else if (sim.phase === 'menu') {
-          if (sampled.moveSpeedRatio > 0) {
+          if (!calibrator.isScanning() && sampled.moveSpeedRatio > 0) {
             sim.player.vx = sampled.moveSpeedRatio * 8.5;
             sim.player.runCycle += dt * (2.2 + sampled.moveSpeedRatio * 10);
           } else {
@@ -270,11 +316,57 @@ export default function App() {
     };
   }, [recordRunProgress]);
 
+  const beginAmbientCalibrationScan = useCallback(() => {
+    const calibrator = calibratorRef.current;
+    calibrator.start(
+      performance.now(),
+      saveDataRef.current.calibration.sensitivity,
+    );
+    setAutoCalState((prev) => ({
+      ...prev,
+      isScanning: true,
+      progress: 0,
+      statusMessage: 'Stay quiet for 2s — measuring room noise...',
+    }));
+  }, []);
+
+  const handleAutoCalibrate = useCallback(async () => {
+    const calibrator = calibratorRef.current;
+    if (calibrator.isScanning()) {
+      calibrator.cancel();
+      setAutoCalState((prev) => ({
+        ...prev,
+        isScanning: false,
+        progress: 0,
+        statusMessage: 'Auto-calibration cancelled.',
+      }));
+      return;
+    }
+
+    const mic = micRef.current;
+    if (!mic) return;
+
+    if (!mic.getStatus().isMicActive) {
+      setAudioTelemetry((prev) => ({ ...prev, isRequesting: true, micError: null }));
+      const started = await mic.start();
+      const status = mic.getStatus();
+      setAudioTelemetry((prev) => ({
+        ...prev,
+        isMicActive: status.isMicActive,
+        isRequesting: status.isRequesting,
+        micError: status.micError,
+      }));
+      if (!started) return;
+    }
+
+    beginAmbientCalibrationScan();
+  }, [beginAmbientCalibrationScan]);
+
   const handleEnableMicTest = useCallback(async () => {
     const mic = micRef.current;
     if (!mic) return;
     setAudioTelemetry((prev) => ({ ...prev, isRequesting: true, micError: null }));
-    await mic.start();
+    const started = await mic.start();
     const status = mic.getStatus();
     setAudioTelemetry((prev) => ({
       ...prev,
@@ -282,10 +374,29 @@ export default function App() {
       isRequesting: status.isRequesting,
       micError: status.micError,
     }));
-  }, []);
+
+    // Automatically calibrate the sound border to room noise on first mic activation
+    if (
+      started &&
+      !hasAutoCalibratedRef.current &&
+      saveDataRef.current.calibration.autoCalibrate !== false
+    ) {
+      beginAmbientCalibrationScan();
+    }
+  }, [beginAmbientCalibrationScan]);
 
   const handleStartRun = useCallback(
     async (overrideName?: string) => {
+      if (calibratorRef.current.isScanning()) {
+        calibratorRef.current.cancel();
+        setAutoCalState((prev) => ({
+          ...prev,
+          isScanning: false,
+          progress: 0,
+          statusMessage: null,
+        }));
+      }
+
       if (overrideName) {
         handleSavePlayerName(overrideName);
       }
@@ -327,7 +438,20 @@ export default function App() {
   );
 
   const handleChangeCalibration = useCallback((cal: AudioCalibration) => {
-    setSaveData((prev) => ({ ...prev, calibration: cal }));
+    // Manual slider adjustment stops any active scan and switches to manual mode
+    if (calibratorRef.current.isScanning()) {
+      calibratorRef.current.cancel();
+    }
+    setAutoCalState((prev) => ({
+      ...prev,
+      isScanning: false,
+      progress: 0,
+      statusMessage: null,
+    }));
+    setSaveData((prev) => ({
+      ...prev,
+      calibration: { ...cal, autoCalibrate: false },
+    }));
   }, []);
 
   const handleToggleMute = useCallback(() => {
@@ -372,8 +496,10 @@ export default function App() {
           hud={hud}
           audio={audioTelemetry}
           calibration={saveData.calibration}
+          autoCalibration={autoCalState}
           mutedSfx={saveData.mutedSfx}
           onChangeCalibration={handleChangeCalibration}
+          onAutoCalibrate={handleAutoCalibrate}
           onToggleMute={handleToggleMute}
           onPause={handlePause}
           onRetryMic={handleEnableMicTest}
@@ -385,6 +511,7 @@ export default function App() {
         saveData={saveData}
         audio={audioTelemetry}
         calibration={saveData.calibration}
+        autoCalibration={autoCalState}
         renderError={renderError}
         leaderboard={leaderboard}
         leaderboardLoading={leaderboardLoading}
@@ -395,6 +522,7 @@ export default function App() {
         onRetryLeaderboard={handleRetryLeaderboard}
         onStartRun={handleStartRun}
         onEnableMicTest={handleEnableMicTest}
+        onAutoCalibrate={handleAutoCalibrate}
         onChangeCalibration={handleChangeCalibration}
         onResume={handleResume}
         onBackToMenu={handleBackToMenu}

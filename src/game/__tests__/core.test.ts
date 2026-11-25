@@ -8,6 +8,10 @@ import {
 } from '../dayNight';
 import { createSimulationState, stepSimulation } from '../simulation';
 import {
+  AmbientNoiseCalibrator,
+  AUTO_CAL_SCAN_MS,
+  AUTO_CAL_SETTLE_MS,
+  computeAutoCalibrationFromSamples,
   computeJumpPower,
   computeJumpThreshold,
   computeMoveSpeedRatio,
@@ -277,4 +281,71 @@ test('leaderboard storage: sanitizes player names and validates device player ID
   assert.equal(isValidPlayerId('ab'), false);
   assert.equal(isValidPlayerId('x'.repeat(120)), false);
 });
+
+test('auto calibration: adapts Move border to quiet, moderate, and noisy rooms while ignoring click spikes', () => {
+  // 1. Quiet bedroom: low border right above silence
+  const quietSamples = Array.from({ length: 40 }, () => 0.002);
+  const quiet = computeAutoCalibrationFromSamples(quietSamples, 1.5);
+  assert.equal(quiet.environmentLabel, 'Quiet');
+  assert.ok(quiet.calibration.threshold >= 0.06 && quiet.calibration.threshold <= 0.11);
+  assert.equal(
+    computeMoveSpeedRatio(
+      normalizeSoundLevel(0.002, quiet.calibration.sensitivity),
+      quiet.calibration.threshold,
+    ),
+    0,
+  );
+
+  // 2. Moderate fan noise + single loud cough outlier: blocks fan, ignores single spike
+  const moderateSamples = Array.from({ length: 38 }, () => 0.018);
+  moderateSamples.push(0.45, 0.5); // brief loud spikes during scan
+  const moderate = computeAutoCalibrationFromSamples(moderateSamples, 1.5);
+  assert.equal(moderate.environmentLabel, 'Moderate');
+  assert.ok(moderate.calibration.threshold > quiet.calibration.threshold);
+  assert.ok(moderate.calibration.threshold < 0.3);
+  assert.equal(
+    computeMoveSpeedRatio(
+      normalizeSoundLevel(0.018, moderate.calibration.sensitivity),
+      moderate.calibration.threshold,
+    ),
+    0,
+  );
+
+  // 3. Very noisy cafe/AC: automatically lowers sensitivity to preserve jump headroom
+  const noisySamples = Array.from({ length: 40 }, () => 0.12);
+  const noisy = computeAutoCalibrationFromSamples(noisySamples, 1.5);
+  assert.equal(noisy.environmentLabel, 'Noisy');
+  assert.ok(noisy.calibration.sensitivity < 1.5);
+  assert.ok(noisy.calibration.threshold <= 0.46);
+  assert.equal(
+    computeMoveSpeedRatio(
+      normalizeSoundLevel(0.12, noisy.calibration.sensitivity),
+      noisy.calibration.threshold,
+    ),
+    0,
+  );
+
+  // 4. AmbientNoiseCalibrator ignores initial tap noise during settle window and finishes cleanly
+  const calibrator = new AmbientNoiseCalibrator();
+  calibrator.start(1000, 1.5);
+  assert.equal(calibrator.isScanning(), true);
+
+  // Loud click inside settle window (< 220ms) must be ignored
+  const settleTick = calibrator.pushSample(0.95, 1000 + AUTO_CAL_SETTLE_MS - 50);
+  assert.equal(settleTick.result, null);
+
+  let finalResult = null;
+  const total = AUTO_CAL_SETTLE_MS + AUTO_CAL_SCAN_MS;
+  for (let t = AUTO_CAL_SETTLE_MS; t <= total + 40; t += 50) {
+    const step = calibrator.pushSample(0.014, 1000 + t);
+    if (step.result) {
+      finalResult = step.result;
+      break;
+    }
+  }
+  assert.ok(finalResult !== null);
+  assert.equal(calibrator.isScanning(), false);
+  assert.ok(finalResult.calibration.threshold >= 0.12 && finalResult.calibration.threshold <= 0.22);
+});
+
 

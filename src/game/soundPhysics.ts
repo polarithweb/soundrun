@@ -1,4 +1,8 @@
-import type { AudioCalibration, AudioTelemetry } from './types';
+import type {
+  AudioCalibration,
+  AudioTelemetry,
+  NoiseEnvironmentLabel,
+} from './types';
 
 export const MIN_MOVE_SPEED = 1.35;
 export const MAX_RUN_SPEED = 11.4;
@@ -6,6 +10,8 @@ export const JUMP_THRESHOLD_OFFSET = 0.3;
 export const JUMP_MIN_VELOCITY = 11.2;
 export const JUMP_MAX_VELOCITY = 19.0;
 export const JUMP_COOLDOWN_MS = 185;
+export const AUTO_CAL_SETTLE_MS = 220;
+export const AUTO_CAL_SCAN_MS = 1600;
 
 /**
  * Computes root-mean-square amplitude (0..1) from unsigned 8-bit time-domain PCM samples
@@ -30,6 +36,145 @@ export function normalizeSoundLevel(rawRms: number, sensitivity: number): number
   const safeSens = Math.min(3.0, Math.max(0.5, sensitivity));
   const boosted = Math.pow(rawRms * safeSens * 2.4, 0.78);
   return Math.min(1, Math.max(0, boosted));
+}
+
+function percentileSorted(sorted: number[], p: number): number {
+  if (sorted.length === 0) return 0;
+  const idx = Math.min(
+    sorted.length - 1,
+    Math.max(0, Math.floor((sorted.length - 1) * p)),
+  );
+  return sorted[idx];
+}
+
+export interface AutoCalibrationResult {
+  calibration: AudioCalibration;
+  ambientNoisePct: number;
+  environmentLabel: NoiseEnvironmentLabel;
+}
+
+/**
+ * Computes optimal Move Border threshold (and sensitivity adjustment in very loud rooms)
+ * from sampled ambient raw RMS values. Uses the 90th percentile so steady background noise
+ * (fans, AC, room hum) is completely blocked while isolated transient spikes don't ruin calibration.
+ */
+export function computeAutoCalibrationFromSamples(
+  rawRmsSamples: number[],
+  currentSensitivity = 1.5,
+): AutoCalibrationResult {
+  const valid = rawRmsSamples
+    .filter((v) => Number.isFinite(v) && v >= 0)
+    .sort((a, b) => a - b);
+
+  let sensitivity = Math.min(
+    3.0,
+    Math.max(0.5, Number.isFinite(currentSensitivity) ? currentSensitivity : 1.5),
+  );
+
+  if (valid.length === 0) {
+    return {
+      calibration: {
+        threshold: 0.12,
+        sensitivity: Math.round(sensitivity * 10) / 10,
+        autoCalibrate: true,
+      },
+      ambientNoisePct: 0,
+      environmentLabel: 'Quiet',
+    };
+  }
+
+  const p50 = percentileSorted(valid, 0.5);
+  const p90 = percentileSorted(valid, 0.9);
+
+  // If the room is loud enough that p90 exceeds 30% of the meter, dial down sensitivity
+  // automatically so the player retains generous dynamic range for sprinting and jumping.
+  const maxAmbientNormTarget = 0.3;
+  let normP90 = normalizeSoundLevel(p90, sensitivity);
+  if (normP90 > maxAmbientNormTarget && p90 > 0) {
+    const targetLinear = Math.pow(maxAmbientNormTarget, 1 / 0.78);
+    const idealSens = targetLinear / (p90 * 2.4);
+    sensitivity = Math.min(3.0, Math.max(0.5, Math.round(idealSens * 10) / 10));
+    normP90 = normalizeSoundLevel(p90, sensitivity);
+  } else {
+    sensitivity = Math.round(sensitivity * 10) / 10;
+  }
+
+  const normP50 = normalizeSoundLevel(p50, sensitivity);
+  const normSpread = Math.max(0, normP90 - normP50);
+  // Headroom margin above ambient p90 so quiet moments stay dead still
+  const margin = Math.min(0.12, Math.max(0.055, 0.055 + normSpread * 0.65));
+  const rawThreshold = normP90 + margin;
+  const threshold = Math.round(Math.min(0.46, Math.max(0.06, rawThreshold)) * 100) / 100;
+
+  const ambientNoisePct = Math.round(normP90 * 100);
+  const environmentLabel: NoiseEnvironmentLabel =
+    ambientNoisePct < 10 ? 'Quiet' : ambientNoisePct < 24 ? 'Moderate' : 'Noisy';
+
+  return {
+    calibration: {
+      threshold,
+      sensitivity,
+      autoCalibrate: true,
+    },
+    ambientNoisePct,
+    environmentLabel,
+  };
+}
+
+/**
+ * Stateful 1.8s environment noise scanner (skips initial button-tap transient).
+ */
+export class AmbientNoiseCalibrator {
+  private active = false;
+  private startMs = 0;
+  private samples: number[] = [];
+  private baseSensitivity = 1.5;
+
+  start(nowMs: number, currentSensitivity: number): void {
+    this.active = true;
+    this.startMs = nowMs;
+    this.samples = [];
+    this.baseSensitivity = currentSensitivity;
+  }
+
+  cancel(): void {
+    this.active = false;
+    this.samples = [];
+  }
+
+  isScanning(): boolean {
+    return this.active;
+  }
+
+  pushSample(
+    rawRms: number,
+    nowMs: number,
+  ): { progress: number; result: AutoCalibrationResult | null } {
+    if (!this.active) {
+      return { progress: 0, result: null };
+    }
+
+    const elapsed = Math.max(0, nowMs - this.startMs);
+    const totalMs = AUTO_CAL_SETTLE_MS + AUTO_CAL_SCAN_MS;
+
+    // Ignore the first 220ms so mouse click / tap noise doesn't inflate the noise floor
+    if (elapsed >= AUTO_CAL_SETTLE_MS && Number.isFinite(rawRms) && rawRms >= 0) {
+      this.samples.push(rawRms);
+    }
+
+    const progress = Math.min(1, elapsed / totalMs);
+    if (elapsed >= totalMs && this.samples.length >= 6) {
+      this.active = false;
+      const result = computeAutoCalibrationFromSamples(
+        this.samples,
+        this.baseSensitivity,
+      );
+      this.samples = [];
+      return { progress: 1, result };
+    }
+
+    return { progress, result: null };
+  }
 }
 
 /**

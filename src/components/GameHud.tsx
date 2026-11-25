@@ -1,4 +1,5 @@
 import {
+  AudioLines,
   ChevronDown,
   ChevronUp,
   CircleDot,
@@ -22,6 +23,7 @@ import { useState } from 'react';
 import type {
   AudioCalibration,
   AudioTelemetry,
+  AutoCalibrationState,
   HudSnapshot,
 } from '../game/types';
 
@@ -29,8 +31,10 @@ interface GameHudProps {
   hud: HudSnapshot;
   audio: AudioTelemetry;
   calibration: AudioCalibration;
+  autoCalibration: AutoCalibrationState;
   mutedSfx: boolean;
   onChangeCalibration: (next: AudioCalibration) => void;
+  onAutoCalibrate: () => void;
   onToggleMute: () => void;
   onPause: () => void;
   onRetryMic: () => void;
@@ -63,8 +67,10 @@ export function GameHud({
   hud,
   audio,
   calibration,
+  autoCalibration,
   mutedSfx,
   onChangeCalibration,
+  onAutoCalibrate,
   onToggleMute,
   onPause,
   onRetryMic,
@@ -202,13 +208,23 @@ export function GameHud({
             </span>
 
             <div className="relative h-3 flex-1 overflow-hidden rounded-full bg-slate-800">
+              {autoCalibration.ambientNoisePct !== null && (
+                <div
+                  aria-hidden="true"
+                  title={`Measured room noise floor: ${autoCalibration.ambientNoisePct}%`}
+                  className="absolute top-0 bottom-0 left-0 bg-sky-400/20"
+                  style={{ width: `${autoCalibration.ambientNoisePct}%` }}
+                />
+              )}
               <div
-                className={`h-full transition-colors duration-75 ${
-                  isJumpingZone
-                    ? 'bg-amber-400'
-                    : isMovingZone
-                      ? 'bg-emerald-400'
-                      : 'bg-slate-600'
+                className={`relative h-full transition-colors duration-75 ${
+                  autoCalibration.isScanning
+                    ? 'bg-sky-400/80'
+                    : isJumpingZone
+                      ? 'bg-amber-400'
+                      : isMovingZone
+                        ? 'bg-emerald-400'
+                        : 'bg-slate-600'
                 }`}
                 style={{ width: `${meterPct}%` }}
               />
@@ -227,7 +243,9 @@ export function GameHud({
             </div>
 
             <span className="w-20 shrink-0 text-right font-mono-tabular text-[11px] text-slate-300">
-              {audio.soundStateLabel}
+              {autoCalibration.isScanning
+                ? `Scan ${Math.round(autoCalibration.progress * 100)}%`
+                : audio.soundStateLabel}
             </span>
 
             <button
@@ -246,50 +264,80 @@ export function GameHud({
           </div>
 
           {dockExpanded && (
-            <div className="mt-2.5 grid grid-cols-2 gap-3 border-t border-white/10 pt-2.5">
-              <label className="flex flex-col gap-1 text-xs text-slate-300">
-                <span className="flex justify-between">
-                  <span>Move / Jump</span>
-                  <span className="font-mono-tabular text-slate-100">
-                    {movePct}% / {jumpPct}%
-                  </span>
+            <div className="mt-2.5 border-t border-white/10 pt-2.5">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <span className="truncate text-[11px] text-slate-400">
+                  {autoCalibration.isScanning
+                    ? 'Stay quiet — measuring room noise...'
+                    : autoCalibration.statusMessage
+                      ? autoCalibration.statusMessage
+                      : 'Auto-set border above room noise'}
                 </span>
-                <input
-                  type="range"
-                  min={4}
-                  max={48}
-                  value={movePct}
-                  onChange={(e) =>
-                    onChangeCalibration({
-                      ...calibration,
-                      threshold: Number(e.target.value) / 100,
-                    })
-                  }
-                  className="accent-amber-400"
-                />
-              </label>
+                <button
+                  type="button"
+                  onClick={onAutoCalibrate}
+                  disabled={audio.isRequesting}
+                  aria-busy={autoCalibration.isScanning}
+                  className={`inline-flex shrink-0 items-center gap-1 rounded-md px-2.5 py-1 text-[11px] font-semibold transition-colors disabled:opacity-50 ${
+                    autoCalibration.isScanning
+                      ? 'bg-sky-500 text-slate-950 hover:bg-sky-400'
+                      : 'bg-sky-500/20 text-sky-200 ring-1 ring-sky-400/40 hover:bg-sky-500/30'
+                  }`}
+                >
+                  <AudioLines className="h-3 w-3" aria-hidden="true" />
+                  <span>
+                    {autoCalibration.isScanning
+                      ? `Scanning ${Math.round(autoCalibration.progress * 100)}%`
+                      : 'Auto Calibrate'}
+                  </span>
+                </button>
+              </div>
 
-              <label className="flex flex-col gap-1 text-xs text-slate-300">
-                <span className="flex justify-between">
-                  <span>Mic Sensitivity</span>
-                  <span className="font-mono-tabular text-slate-100">
-                    {calibration.sensitivity.toFixed(1)}x
+              <div className="grid grid-cols-2 gap-3">
+                <label className="flex flex-col gap-1 text-xs text-slate-300">
+                  <span className="flex justify-between">
+                    <span>Move / Jump</span>
+                    <span className="font-mono-tabular text-slate-100">
+                      {movePct}% / {jumpPct}%
+                    </span>
                   </span>
-                </span>
-                <input
-                  type="range"
-                  min={5}
-                  max={30}
-                  value={Math.round(calibration.sensitivity * 10)}
-                  onChange={(e) =>
-                    onChangeCalibration({
-                      ...calibration,
-                      sensitivity: Number(e.target.value) / 10,
-                    })
-                  }
-                  className="accent-emerald-400"
-                />
-              </label>
+                  <input
+                    type="range"
+                    min={4}
+                    max={48}
+                    value={movePct}
+                    onChange={(e) =>
+                      onChangeCalibration({
+                        ...calibration,
+                        threshold: Number(e.target.value) / 100,
+                      })
+                    }
+                    className="accent-amber-400"
+                  />
+                </label>
+
+                <label className="flex flex-col gap-1 text-xs text-slate-300">
+                  <span className="flex justify-between">
+                    <span>Mic Sensitivity</span>
+                    <span className="font-mono-tabular text-slate-100">
+                      {calibration.sensitivity.toFixed(1)}x
+                    </span>
+                  </span>
+                  <input
+                    type="range"
+                    min={5}
+                    max={30}
+                    value={Math.round(calibration.sensitivity * 10)}
+                    onChange={(e) =>
+                      onChangeCalibration({
+                        ...calibration,
+                        sensitivity: Number(e.target.value) / 10,
+                      })
+                    }
+                    className="accent-emerald-400"
+                  />
+                </label>
+              </div>
             </div>
           )}
         </div>

@@ -107,6 +107,17 @@ export interface SimulationState {
 export interface AudioCalibration {
   threshold: number; // 0.04 .. 0.48 (Move Gate; Jump Gate is threshold + 0.30)
   sensitivity: number; // 0.5 .. 3.0
+  autoCalibrate?: boolean; // Whether the border line was auto-calibrated from ambient noise
+}
+
+export type NoiseEnvironmentLabel = 'Quiet' | 'Moderate' | 'Noisy';
+
+export interface AutoCalibrationState {
+  isScanning: boolean;
+  progress: number; // 0..1
+  ambientNoisePct: number | null; // 0..100 normalized ambient noise floor
+  environmentLabel: NoiseEnvironmentLabel | null;
+  statusMessage: string | null;
 }
 
 export interface AudioTelemetry {

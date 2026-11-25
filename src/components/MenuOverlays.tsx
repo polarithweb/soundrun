@@ -1,4 +1,5 @@
 import {
+  AudioLines,
   Check,
   Mic,
   MicOff,
@@ -14,6 +15,7 @@ import { PLAYER_NAME_MAX_LENGTH, sanitizePlayerName } from '../game/storage';
 import type {
   AudioCalibration,
   AudioTelemetry,
+  AutoCalibrationState,
   HudSnapshot,
   LeaderboardEntry,
   PersistedSaveData,
@@ -25,6 +27,7 @@ interface MenuOverlaysProps {
   saveData: PersistedSaveData;
   audio: AudioTelemetry;
   calibration: AudioCalibration;
+  autoCalibration: AutoCalibrationState;
   renderError: string | null;
   leaderboard: LeaderboardEntry[];
   leaderboardLoading: boolean;
@@ -35,6 +38,7 @@ interface MenuOverlaysProps {
   onRetryLeaderboard: () => void;
   onStartRun: (overrideName?: string) => void;
   onEnableMicTest: () => void;
+  onAutoCalibrate: () => void;
   onChangeCalibration: (next: AudioCalibration) => void;
   onResume: () => void;
   onBackToMenu: () => void;
@@ -45,6 +49,7 @@ export function MenuOverlays({
   saveData,
   audio,
   calibration,
+  autoCalibration,
   renderError,
   leaderboard,
   leaderboardLoading,
@@ -55,6 +60,7 @@ export function MenuOverlays({
   onRetryLeaderboard,
   onStartRun,
   onEnableMicTest,
+  onAutoCalibrate,
   onChangeCalibration,
   onResume,
   onBackToMenu,
@@ -118,6 +124,9 @@ export function MenuOverlays({
                   <h1 className="font-display text-2xl font-bold tracking-tight text-white sm:text-3xl">
                     Echo Meadow Run
                   </h1>
+                  <p className="mt-0.5 text-xs font-medium text-slate-400">
+                    Developer: Priyam Kesh
+                  </p>
                   <p className="mt-1 text-xs leading-relaxed text-slate-300">
                     <strong className="text-amber-400">
                       100% voice-driven movement:
@@ -209,7 +218,7 @@ export function MenuOverlays({
 
               {/* Live Sound Intensity Calibration */}
               <div className="mt-3 rounded-xl border border-white/10 bg-slate-900/90 p-3">
-                <div className="flex items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
                   <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-100">
                     {audio.isMicActive ? (
                       <Mic className="h-4 w-4 text-emerald-400" aria-hidden="true" />
@@ -218,26 +227,67 @@ export function MenuOverlays({
                     )}
                     <span>Sound Intensity Calibration</span>
                   </span>
-                  {!audio.isMicActive && (
+                  <div className="flex items-center gap-1.5">
                     <button
                       type="button"
-                      onClick={onEnableMicTest}
+                      onClick={onAutoCalibrate}
                       disabled={audio.isRequesting}
-                      className="rounded-md bg-slate-800 px-2.5 py-1 text-xs font-medium text-amber-300 hover:bg-slate-700 disabled:opacity-50"
+                      aria-busy={autoCalibration.isScanning}
+                      className={`inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-semibold transition-colors disabled:opacity-50 ${
+                        autoCalibration.isScanning
+                          ? 'bg-sky-500 text-slate-950 hover:bg-sky-400'
+                          : 'bg-sky-500/20 text-sky-200 ring-1 ring-sky-400/40 hover:bg-sky-500/30'
+                      }`}
                     >
-                      {audio.isRequesting ? 'Connecting...' : 'Test Mic'}
+                      <AudioLines className="h-3.5 w-3.5" aria-hidden="true" />
+                      <span>
+                        {autoCalibration.isScanning
+                          ? `Scanning ${Math.round(autoCalibration.progress * 100)}%`
+                          : 'Auto Calibrate'}
+                      </span>
                     </button>
-                  )}
+                    {!audio.isMicActive && (
+                      <button
+                        type="button"
+                        onClick={onEnableMicTest}
+                        disabled={audio.isRequesting}
+                        className="rounded-md bg-slate-800 px-2.5 py-1 text-xs font-medium text-amber-300 hover:bg-slate-700 disabled:opacity-50"
+                      >
+                        {audio.isRequesting ? 'Connecting...' : 'Test Mic'}
+                      </button>
+                    )}
+                  </div>
                 </div>
 
+                {autoCalibration.isScanning && (
+                  <div className="mt-2" role="status" aria-live="polite">
+                    <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
+                      <div
+                        className="h-full bg-sky-400 transition-all duration-75"
+                        style={{ width: `${Math.round(autoCalibration.progress * 100)}%` }}
+                      />
+                    </div>
+                  </div>
+                )}
+
                 <div className="relative mt-2 h-3 w-full overflow-hidden rounded-full bg-slate-800">
+                  {autoCalibration.ambientNoisePct !== null && (
+                    <div
+                      aria-hidden="true"
+                      title={`Measured room noise floor: ${autoCalibration.ambientNoisePct}%`}
+                      className="absolute top-0 bottom-0 left-0 bg-sky-400/20"
+                      style={{ width: `${autoCalibration.ambientNoisePct}%` }}
+                    />
+                  )}
                   <div
-                    className={`h-full transition-colors duration-75 ${
-                      isJumpingZone
-                        ? 'bg-amber-400'
-                        : isMovingZone
-                          ? 'bg-emerald-400'
-                          : 'bg-slate-600'
+                    className={`relative h-full transition-colors duration-75 ${
+                      autoCalibration.isScanning
+                        ? 'bg-sky-400/80'
+                        : isJumpingZone
+                          ? 'bg-amber-400'
+                          : isMovingZone
+                            ? 'bg-emerald-400'
+                            : 'bg-slate-600'
                     }`}
                     style={{ width: `${meterPct}%` }}
                   />
@@ -255,17 +305,21 @@ export function MenuOverlays({
                   />
                 </div>
 
-                <div className="mt-1.5 flex items-center justify-between text-[11px] text-slate-400">
-                  <span>
-                    {audio.isMicActive
-                      ? isJumpingZone
-                        ? `Jumping (${audio.soundStateLabel})`
-                        : isMovingZone
-                          ? `Moving (${audio.soundStateLabel} — louder to jump)`
-                          : 'Silent — character stands still'
-                      : 'Tap Test Mic or Start Run to activate microphone'}
+                <div className="mt-1.5 flex items-center justify-between gap-2 text-[11px] text-slate-400">
+                  <span className="truncate">
+                    {autoCalibration.isScanning
+                      ? 'Stay quiet for 2s — measuring room noise...'
+                      : autoCalibration.statusMessage
+                        ? autoCalibration.statusMessage
+                        : audio.isMicActive
+                          ? isJumpingZone
+                            ? `Jumping (${audio.soundStateLabel})`
+                            : isMovingZone
+                              ? `Moving (${audio.soundStateLabel} — louder to jump)`
+                              : 'Silent — character stands still'
+                          : 'Tap Auto Calibrate or Test Mic to match your room noise'}
                   </span>
-                  <span className="font-mono-tabular text-slate-200">
+                  <span className="shrink-0 font-mono-tabular text-slate-200">
                     {meterPct}%
                   </span>
                 </div>

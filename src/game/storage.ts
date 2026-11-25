@@ -55,6 +55,7 @@ export function createDefaultSaveData(): PersistedSaveData {
     calibration: {
       threshold: 0.12,
       sensitivity: 1.5,
+      autoCalibrate: true,
     },
     mutedSfx: false,
   };
@@ -75,6 +76,8 @@ export function clampCalibration(
   return {
     threshold: Math.min(0.48, Math.max(0.04, rawThreshold)),
     sensitivity: Math.min(3.0, Math.max(0.5, rawSensitivity)),
+    autoCalibrate:
+      typeof cal?.autoCalibrate === 'boolean' ? cal.autoCalibrate : true,
   };
 }
 
